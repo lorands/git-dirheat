@@ -59,6 +59,7 @@
             border-radius: 4px;
             font-size: 12px;
             white-space: nowrap;
+            z-index: 10;
             pointer-events: none;
         }
         #breadcrumbs {
@@ -267,21 +268,26 @@
                 .data(childrenToRender, d => d.data.name) 
                 .enter()
                 .append("div")
-                .attr("class", "node") // Check if this class is being added
-                // Add temporary distinct background to ensure element exists
-                // .style("background-color", "rgba(0, 255, 0, 0.5)") 
-                .each(function(d) { // Log AFTER element creation
+                .attr("class", "node") 
+                .each(function(d) {
                     console.log(`   -> Created element for: '${d.data.name}'`);
                 })
                 .style("left", d => `${d.x0}px`)
                 .style("top", d => `${d.y0}px`)
                 .style("width", d => `${Math.max(0, d.x1 - d.x0)}px`)
                 .style("height", d => `${Math.max(0, d.y1 - d.y0)}px`)
-                // Set final background color
                 .style("background-color", d => colorScale(d.data.value)) 
-                .on("mouseover", (event, d) => { /* ... tooltip ... */ })
-                .on("mousemove", (event) => { /* ... tooltip ... */ })
-                .on("mouseout", () => { /* ... tooltip ... */ })
+                .on("mouseover", (event, d) => {
+                    tooltip.style("visibility", "visible")
+                        .html(`<strong>${d.data.name}</strong>`);
+                })
+                .on("mousemove", (event) => {
+                    tooltip.style("top", (event.clientY + 10) + "px")
+                           .style("left", (event.clientX + 10) + "px");
+                })
+                .on("mouseout", () => {
+                    tooltip.style("visibility", "hidden");
+                })
                 .on("click", (event, d) => {
                     // Get current path from hash
                     let hash = window.location.hash;
