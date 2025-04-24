@@ -166,62 +166,66 @@ func analyzeRepo(path string) (*Node, error) {
 		processedLines++
 
 		parts := strings.Fields(line)
+		var filePath string
+		var addedStr, deletedStr string
 		if len(parts) < 3 {
-			// Handle potential rename lines like: 1       0       src/{foo.go => bar.go}
-			// For simplicity, we'll just count the destination file for now.
-			// More complex rename handling could be added here if needed.
+			// Handle potential rename lines like: 1       0       src/{foo.go => bar.go} or {old/path/foo.go => new/path/bar.go}
 			if strings.Contains(line, "=>") {
-				renameParts := strings.SplitN(line, "=>", 2)
-				if len(renameParts) == 2 {
-					// Try to extract the destination path
-					destPathPart := strings.TrimSpace(renameParts[1])
-					destPathPart = strings.TrimSuffix(destPathPart, "}") // Clean up
-					destPathPart = strings.TrimSpace(destPathPart)
-					if destPathPart != "" {
-						// Need to find the numeric parts before the rename part
-						fieldsBeforeRename := strings.Fields(renameParts[0])
-						if len(fieldsBeforeRename) >= 2 {
-							parts = []string{fieldsBeforeRename[0], fieldsBeforeRename[1], destPathPart}
-							log.Printf("DEBUG: Handled rename, using dest: %s", destPathPart)
-						} else {
-							log.Printf("WARN: Could not parse rename line effectively: %s", line)
-							continue
-						}
-					} else {
-						log.Printf("WARN: Could not parse rename line dest: %s", line)
-						continue
+				// Extract the destination path robustly
+				leftCurly := strings.Index(line, "{")
+				rightCurly := strings.Index(line, "}")
+				arrow := strings.Index(line, "=>")
+				if leftCurly >= 0 && rightCurly > leftCurly && arrow > leftCurly && arrow < rightCurly {
+					// e.g. src/{foo.go => bar.go}
+					prefix := line[:leftCurly]
+					inside := line[leftCurly+1 : rightCurly]
+					insideParts := strings.Split(inside, "=>")
+					if len(insideParts) == 2 {
+						// Use the right side (destination)
+						filePath = strings.TrimSpace(prefix + insideParts[1])
 					}
+				} else if leftCurly == 0 && arrow > 0 {
+					// e.g. {old/path/foo.go => new/path/bar.go}
+					inside := line[1:]
+					arrow = strings.Index(inside, "=>")
+					if arrow > 0 {
+						right := inside[arrow+2:]
+						right = strings.TrimPrefix(right, " ")
+						right = strings.TrimSuffix(right, "}")
+						filePath = strings.TrimSpace(right)
+					}
+				}
+				// If still not found, skip
+				if filePath == "" {
+					log.Printf("WARN: Could not robustly parse rename line: %s", line)
+					continue
+				}
+				if len(parts) >= 2 {
+					addedStr, deletedStr = parts[0], parts[1]
 				} else {
-					log.Printf("WARN: Skipping malformed numstat line (expected 3+ fields or rename): %s", line)
+					log.Printf("WARN: Could not parse numeric fields in rename line: %s", line)
 					continue
 				}
 			} else {
 				log.Printf("WARN: Skipping malformed numstat line (expected 3+ fields): %s", line)
 				continue
 			}
+		} else {
+			// Normal line
+			addedStr = parts[0]
+			deletedStr = parts[1]
+			filePath = parts[2]
 		}
-
-		// Check if added/deleted are numbers or '-' (binary file)
-		addedStr := parts[0]
-		deletedStr := parts[1]
-		filePath := parts[2] // Path is the third field
 
 		var changeAmount int
 		if addedStr == "-" || deletedStr == "-" {
-			// Binary file or unusual change, count as 1 change occurrence
 			changeAmount = 1
 		} else {
-			// Use number of lines changed as the value (or just count 1 per appearance)
-			// Option 1: Count each appearance as 1 change
 			changeAmount = 1
-			// Option 2: Sum lines changed (can inflate values for large refactors)
-			// added, _ := strconv.Atoi(addedStr)
-			// deleted, _ := strconv.Atoi(deletedStr)
-			// changeAmount = added + deleted
 		}
 
-		// Normalize path and increment count
 		normalizedPath := filepath.ToSlash(strings.TrimSpace(filePath))
+		normalizedPath = strings.TrimLeft(normalizedPath, "{ ")
 		if normalizedPath != "" {
 			fileChangeCounts[normalizedPath] += changeAmount
 			// log.Printf("DEBUG: File: %s, Change: %d, Total: %d", normalizedPath, changeAmount, fileChangeCounts[normalizedPath]) // Verbose
@@ -246,6 +250,10 @@ func analyzeRepo(path string) (*Node, error) {
 			continue
 		} // Skip files with zero count if using line changes
 		pathParts := strings.Split(filePath, "/")
+		// Sanitize each path segment to remove leading/trailing curly braces and whitespace
+		for i, part := range pathParts {
+			pathParts[i] = strings.Trim(part, " {}")
+		}
 		fileNode := rootDir.ensurePath(pathParts) // Create structure down to the file
 		fileNode.Value = count                    // Set the file's final aggregated count
 	}
