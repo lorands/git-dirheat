@@ -204,12 +204,35 @@
 
             // Fix: Always use a fresh hierarchy as root for the treemap layout to avoid NaN coordinates
             let localRoot = displayRoot;
+            let parentPath = [];
             if (displayRoot.depth !== 0) {
-                // If not at the global root, create a new hierarchy from the data
-                localRoot = d3.hierarchy(displayRoot.data)
-                    .sum(d => Math.max(1, d.value))
+                // Build path from root to this node
+                let cur = displayRoot;
+                while (cur.parent) {
+                    parentPath.unshift(cur.data.name);
+                    cur = cur.parent;
+                }
+                // localRoot is a new hierarchy, but we'll pass the path down manually
+                localRoot = d3.hierarchy(displayRoot.data);
+                // Recursively assign pathFromRoot to all nodes
+                function assignPaths(node, pathSoFar) {
+                    node.pathFromRoot = [...pathSoFar, node.data.name].filter(Boolean);
+                    if (node.children) {
+                        node.children.forEach(child => assignPaths(child, node.pathFromRoot));
+                    }
+                }
+                assignPaths(localRoot, cur.depth === 0 ? [] : parentPath);
+                localRoot.sum(d => Math.max(1, d.value))
                     .sort((a, b) => b.value - a.value);
             } else {
+                // At root
+                function assignPaths(node, pathSoFar) {
+                    node.pathFromRoot = [...pathSoFar, node.data.name].filter(Boolean);
+                    if (node.children) {
+                        node.children.forEach(child => assignPaths(child, node.pathFromRoot));
+                    }
+                }
+                assignPaths(displayRoot, []);
                 displayRoot.sum(d => Math.max(1, d.value));
                 displayRoot.sort((a, b) => b.data.value - a.data.value);
                 localRoot = displayRoot;
@@ -260,18 +283,16 @@
                 .on("mousemove", (event) => { /* ... tooltip ... */ })
                 .on("mouseout", () => { /* ... tooltip ... */ })
                 .on("click", (event, d) => {
-                    // console.log(`Node Clicked: '${d.data.name}'`);
-                    const hasHierarchyChildren = d.children && d.children.length > 0;
-                     if (hasHierarchyChildren) {
-                         const path = getNodePath(d); 
-                         // console.log(`Drilling down. Setting hash to: ${path}`);
-                         window.location.hash = path;
-                     } else {
-                        // console.log(`Clicked node '${d.data.name}' is a leaf or has no children.`);
-                        tooltip.style("visibility", "visible")
-                           .text(`${d.data.name}: ${d.data.value} changes (End of branch)`); 
-                    }
-                });
+                    // Get current path from hash
+                    let hash = window.location.hash;
+                    let currentPath = hash.startsWith('#/') ? hash.substring(2) : (hash === '#' ? '' : hash.substring(1));
+                    let pathArray = currentPath ? currentPath.split('/') : [];
+                    // Append clicked node's name
+                    pathArray.push(d.data.name);
+                    // Build new anchor
+                    const newAnchor = `#/${pathArray.join('/')}`;
+                    window.location.hash = newAnchor;
+                })
                 
             // Log how many nodes were actually added to the DOM
             console.log(`Added ${chart.selectAll(".node").size()} node elements to the chart.`);
