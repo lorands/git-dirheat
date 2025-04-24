@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Git Repository Change Heatmap (Routed)</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        /* ... (styles remain the same) ... */
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+        }
+        #chart {
+            width: 90%;
+            height: 70vh;
+            min-height: 400px;
+            border: 1px solid #ccc;
+            position: relative;
+            overflow: hidden;
+        }
+        .node {
+            box-sizing: border-box;
+            position: absolute;
+            overflow: hidden;
+            border: 1px solid #fff;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            transition: background-color 0.5s ease, top 0.5s ease, left 0.5s ease, width 0.5s ease, height 0.5s ease;
+            color: #333;
+            font-size: 12px;
+        }
+        .node-label {
+            padding: 2px 4px;
+            background-color: rgba(255, 255, 255, 0.8);
+            border-radius: 3px;
+            max-width: 95%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+         .node-value {
+            font-size: 10px;
+            color: #555;
+            margin-top: 2px;
+            pointer-events: none;
+        }
+        #tooltip {
+            position: absolute;
+            visibility: hidden;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        #breadcrumbs {
+            margin-bottom: 10px;
+            font-size: 14px;
+            min-height: 1.2em;
+        }
+        #breadcrumbs a {
+            text-decoration: none;
+            color: blue;
+            cursor: pointer;
+        }
+         #breadcrumbs span {
+             margin: 0 5px;
+             color: #555;
+         }
+         #loading, #error {
+             text-align: center;
+             margin-top: 50px;
+             font-size: 1.2em;
+             color: #888;
+         }
+         .no-children-message {
+             padding: 20px;
+             text-align: center;
+             color: #666;
+         }
+    </style>
+</head>
+<body>
+    <h1>Git Repository Change Heatmap (Routed)</h1>
+    <div id="breadcrumbs"></div>
+    <div id="chart"></div>
+    <div id="tooltip"></div>
+    <div id="loading">Loading data...</div>
+    <div id="error" style="display: none; color: red;"></div>
+
+    <script>
+        let chartWidth = document.getElementById('chart').clientWidth;
+        let chartHeight = document.getElementById('chart').clientHeight;
+        const chart = d3.select("#chart");
+        const tooltip = d3.select("#tooltip");
+        const breadcrumbs = d3.select("#breadcrumbs");
+        const loadingDiv = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+
+        const colorScale = d3.scaleSequentialSqrt(d3.interpolateRgb("lightblue", "red"))
+                              .domain([0, 1]);
+
+        let rootData = null; // Full D3 hierarchy
+
+        const treemapLayout = d3.treemap()
+            .paddingInner(1)
+            .paddingOuter(2)
+            .paddingTop(18)
+            .round(true);
+
+        // --- Routing Helpers (remain the same) ---
+        function getNodePath(node) {
+            if (!node || !node.ancestors) return "#";
+            const path = node.ancestors().reverse().slice(1).map(d => d.data.name).join('/');
+            return `#${path ? '/' + path : ''}`;
+        }
+
+        function findNodeByPath(root, pathArray) {
+            if (!root) return null;
+            if (!pathArray || pathArray.length === 0 || (pathArray.length === 1 && pathArray[0] === '')) {
+                return root;
+            }
+            let currentNode = root;
+            for (const part of pathArray) {
+                if (!currentNode.children) return null; 
+                const foundChild = currentNode.children.find(child => child.data.name === part);
+                if (!foundChild) return null;
+                currentNode = foundChild;
+            }
+            return currentNode;
+        }
+
+        // --- Main Data Fetch and Setup ---
+        fetch('/data')
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => { throw new Error(`HTTP error! Status: ${response.status} - ${text || 'Server error'}`)}); 
+                }
+                return response.json();
+            })
+            .then(data => {
+                loadingDiv.style.display = 'none';
+                if (!data || data.value === undefined) {
+                     throw new Error('Invalid or empty data structure received.');
+                }
+                console.log("[Initial Load] Raw data received.");
+
+                // *** Use Math.max(1, d.value) for .sum() to ensure non-zero layout area ***
+                rootData = d3.hierarchy(data)
+                             .sum(d => Math.max(1, d.value)) // Ensure min area of 1
+                             .sort((a, b) => b.data.value - a.data.value); // Sort by ORIGINAL value for consistency
+
+                console.log("[Initial Load] Hierarchy processed.");
+                window.addEventListener('hashchange', handleHashChange);
+                handleHashChange(); // Initial render
+            })
+            .catch(error => {
+                loadingDiv.style.display = 'none';
+                errorDiv.textContent = `Error loading/processing data: ${error.message}`;
+                errorDiv.style.display = 'block';
+                console.error('Fetch/Processing Error:', error);
+            });
+
+        // --- Hash Change Handler (remains the same) ---
+        function handleHashChange() {
+            if (!rootData) { 
+                console.warn("handleHashChange called before rootData is ready.");
+                return; 
+            }
+            const hash = window.location.hash;
+            // console.log(`Hash changed to: ${hash}`);
+            const pathString = hash.startsWith('#/') ? hash.substring(2) : (hash === '#' ? '' : hash.substring(1));
+            const pathArray = pathString ? pathString.split('/') : [];
+            
+            // console.log(`Attempting to find node for path: [${pathArray.join(', ')}]`);
+            const targetNode = findNodeByPath(rootData, pathArray);
+
+            if (targetNode) {
+                // console.log(`Node found: '${targetNode.data.name}'. Rendering...`);
+                resizeAndRender(targetNode);
+            } else {
+                console.warn(`Node for path [${pathArray.join(', ')}] not found. Redirecting to root.`);
+                window.location.hash = "#"; 
+            }
+        }
+
+        // --- Rendering Function ---
+        function renderTreemap(displayRoot) {
+            console.log(`--- Rendering treemap for: '${displayRoot.data.name}' ---`);
+            
+            const maxChildValue = d3.max(displayRoot.children || [], d => d.data.value);
+            colorScale.domain([0, Math.max(1, maxChildValue || displayRoot.data.value)]); 
+
+            chart.selectAll("*").remove(); // Clear chart
+            updateBreadcrumbs(displayRoot);
+
+            // Recompute hierarchy and sum for current root to ensure correct sizing at every depth
+            displayRoot.sum(d => Math.max(1, d.value));
+            // Optionally sort children by value for consistent layout
+            displayRoot.sort((a, b) => b.data.value - a.data.value);
+
+            treemapLayout.size([chartWidth, chartHeight]);
+            console.log(`Applying layout to '${displayRoot.data.name}' (summed value: ${displayRoot.value}).`);
+            treemapLayout(displayRoot); // Calculate coordinates
+
+            const childrenToRender = displayRoot.children || [];
+            console.log(`Node '${displayRoot.data.name}' has ${childrenToRender.length} children for rendering.`);
+
+            // Log calculated coordinates
+            childrenToRender.forEach((child, index) => {
+                const width = child.x1 - child.x0;
+                const height = child.y1 - child.y0;
+                console.log(`  [${index}] Child: '${child.data.name}', OrigVal: ${child.data.value}, SumVal: ${child.value}, W: ${width.toFixed(1)}, H: ${height.toFixed(1)}`);
+                 if (width <= 0 || height <= 0) {
+                     console.warn(`   -> Child '${child.data.name}' has zero/negative dimensions!`);
+                 }
+            });
+
+            if (childrenToRender.length === 0) {
+                 console.log(`No children with dimensions > 0 to render for '${displayRoot.data.name}'.`);
+                 chart.append("div")
+                      .attr("class", "no-children-message")
+                      .text(`Directory '${displayRoot.data.name}' has no displayable contents.`);
+                 return;
+            }
+
+            console.log(`Binding data for ${childrenToRender.length} children and creating elements...`);
+            const nodes = chart.selectAll(".node")
+                .data(childrenToRender, d => d.data.name) 
+                .enter()
+                .append("div")
+                .attr("class", "node") // Check if this class is being added
+                // Add temporary distinct background to ensure element exists
+                // .style("background-color", "rgba(0, 255, 0, 0.5)") 
+                .each(function(d) { // Log AFTER element creation
+                    console.log(`   -> Created element for: '${d.data.name}'`);
+                })
+                .style("left", d => `${d.x0}px`)
+                .style("top", d => `${d.y0}px`)
+                .style("width", d => `${Math.max(0, d.x1 - d.x0)}px`)
+                .style("height", d => `${Math.max(0, d.y1 - d.y0)}px`)
+                // Set final background color
+                .style("background-color", d => colorScale(d.data.value)) 
+                .on("mouseover", (event, d) => { /* ... tooltip ... */ })
+                .on("mousemove", (event) => { /* ... tooltip ... */ })
+                .on("mouseout", () => { /* ... tooltip ... */ })
+                .on("click", (event, d) => {
+                    // console.log(`Node Clicked: '${d.data.name}'`);
+                    const hasHierarchyChildren = d.children && d.children.length > 0;
+                     if (hasHierarchyChildren) {
+                         const path = getNodePath(d); 
+                         // console.log(`Drilling down. Setting hash to: ${path}`);
+                         window.location.hash = path;
+                     } else {
+                        // console.log(`Clicked node '${d.data.name}' is a leaf or has no children.`);
+                        tooltip.style("visibility", "visible")
+                           .text(`${d.data.name}: ${d.data.value} changes (End of branch)`); 
+                    }
+                });
+                
+            // Log how many nodes were actually added to the DOM
+            console.log(`Added ${chart.selectAll(".node").size()} node elements to the chart.`);
+
+            // Add labels/values...
+             nodes.append("span")
+                 .attr("class", "node-label")
+                 .text(d => d.data.name)
+                 .style("display", d => (d.x1 - d.x0 > 50 && d.y1 - d.y0 > 20) ? 'block' : 'none');
+            nodes.append("span")
+                 .attr("class", "node-value")
+                 .text(d => `(${d.data.value})`)
+                 .style("display", d => (d.x1 - d.x0 > 50 && d.y1 - d.y0 > 35) ? 'block' : 'none');
+            
+             console.log(`--- Finished Rendering '${displayRoot.data.name}' ---`);
+        }
+
+        // --- Breadcrumbs Update (remains the same) ---
+        function updateBreadcrumbs(node) {
+             breadcrumbs.html('');
+            const pathNodes = node.ancestors().reverse(); 
+
+            pathNodes.forEach((d, i) => {
+                if (i > 0) { breadcrumbs.append("span").text(" > "); }
+                breadcrumbs.append("a")
+                           .attr("href", getNodePath(d))
+                           .text(d.data.name)
+                           .classed("current", i === pathNodes.length - 1)
+                           .on("click", (event) => { /* console.log(...) */ });
+            });
+        }
+
+        // --- Resize Handler (remains the same) ---
+        function resizeAndRender(node) {
+            chartWidth = document.getElementById('chart').clientWidth;
+            chartHeight = document.getElementById('chart').clientHeight;
+            renderTreemap(node); 
+        }
+
+         window.addEventListener('resize', () => {
+             handleHashChange(); 
+         });
+
+    </script>
+</body>
+</html>
