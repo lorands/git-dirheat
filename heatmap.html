@@ -202,16 +202,23 @@
             chart.selectAll("*").remove(); // Clear chart
             updateBreadcrumbs(displayRoot);
 
-            // Recompute hierarchy and sum for current root to ensure correct sizing at every depth
-            displayRoot.sum(d => Math.max(1, d.value));
-            // Optionally sort children by value for consistent layout
-            displayRoot.sort((a, b) => b.data.value - a.data.value);
-
+            // Fix: Always use a fresh hierarchy as root for the treemap layout to avoid NaN coordinates
+            let localRoot = displayRoot;
+            if (displayRoot.depth !== 0) {
+                // If not at the global root, create a new hierarchy from the data
+                localRoot = d3.hierarchy(displayRoot.data)
+                    .sum(d => Math.max(1, d.value))
+                    .sort((a, b) => b.value - a.value);
+            } else {
+                displayRoot.sum(d => Math.max(1, d.value));
+                displayRoot.sort((a, b) => b.data.value - a.data.value);
+                localRoot = displayRoot;
+            }
             treemapLayout.size([chartWidth, chartHeight]);
             console.log(`Applying layout to '${displayRoot.data.name}' (summed value: ${displayRoot.value}).`);
-            treemapLayout(displayRoot); // Calculate coordinates
+            treemapLayout(localRoot); // Calculate coordinates
 
-            const childrenToRender = displayRoot.children || [];
+            const childrenToRender = localRoot.children || [];
             console.log(`Node '${displayRoot.data.name}' has ${childrenToRender.length} children for rendering.`);
 
             // Log calculated coordinates
