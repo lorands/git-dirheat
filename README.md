@@ -1,4 +1,6 @@
 
+(An experiment on using LLMs without writing a single line of code, just supervising.)
+
 # Git Dir Heat  
 
 Create a heat-map of Git changes over time. 
